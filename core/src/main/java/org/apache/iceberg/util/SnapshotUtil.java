@@ -133,7 +133,6 @@ public class SnapshotUtil {
     Preconditions.checkArgument(table.snapshot(snapshotId) != null, "Cannot find parent snapshot: %s", snapshotId);
 
     Snapshot current = table.currentSnapshot();
-
     while (current != null) {
       if (current.parentId() == snapshotId) {
         return current;
