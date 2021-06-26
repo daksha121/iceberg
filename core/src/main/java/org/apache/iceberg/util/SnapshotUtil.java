@@ -125,8 +125,7 @@ public class SnapshotUtil {
   /**
    * Traverses the history of the table's current snapshot and finds the snapshot with the given snapshot id as its
    * parent.
-   * @return null if the given snapshot is the table's current snapshot
-   * or else returns the snapshot for which the given snapshot is the parent
+   * @return the snapshot for which the given snapshot is the parent
    * @throws IllegalArgumentException when the given snapshotId is not found in the table
    * @throws IllegalStateException when the given snapshotId is not an ancestor of the current table state
    */
@@ -134,9 +133,6 @@ public class SnapshotUtil {
     Preconditions.checkArgument(table.snapshot(snapshotId) != null, "Cannot find parent snapshot: %s", snapshotId);
 
     Snapshot current = table.currentSnapshot();
-    if (current.snapshotId() == snapshotId) {
-      return null;
-    }
 
     while (current != null) {
       if (current.parentId() == snapshotId) {
