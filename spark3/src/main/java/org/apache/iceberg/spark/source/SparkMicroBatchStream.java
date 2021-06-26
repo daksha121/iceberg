@@ -79,6 +79,8 @@ public class SparkMicroBatchStream implements MicroBatchStream {
   private final Long splitOpenFileCost;
   private final boolean localityPreferred;
   private final StreamingOffset initialOffset;
+  private final boolean ignoreDelete;
+  private final boolean ignoreRepace;
 
   SparkMicroBatchStream(JavaSparkContext sparkContext, Table table, boolean caseSensitive,
                         Schema expectedSchema, CaseInsensitiveStringMap options, String checkpointLocation) {
@@ -169,24 +171,29 @@ public class SparkMicroBatchStream implements MicroBatchStream {
 
   private List<FileScanTask> planFiles(StreamingOffset startOffset, StreamingOffset endOffset) {
     List<FileScanTask> fileScanTasks = Lists.newArrayList();
-    MicroBatch latestMicroBatch = null;
     StreamingOffset batchStartOffset = StreamingOffset.START_OFFSET.equals(startOffset) ?
         new StreamingOffset(SnapshotUtil.oldestSnapshot(table).snapshotId(), 0, false) :
         startOffset;
 
-    do {
-      StreamingOffset currentOffset =
-          latestMicroBatch != null && latestMicroBatch.lastIndexOfSnapshot() ?
-              new StreamingOffset(snapshotAfter(latestMicroBatch.snapshotId()), 0L, false) :
-              batchStartOffset;
+    StreamingOffset currentOffset = null;
 
-      latestMicroBatch = MicroBatches.from(table.snapshot(currentOffset.snapshotId()), table.io())
+    do {
+      if (currentOffset == null) {
+        currentOffset = batchStartOffset;
+      } else {
+        Snapshot snapshotAfter = SnapshotUtil.snapshotAfter(table, currentOffset.snapshotId());
+      }
+      currentOffset = currentOffset == null ?
+          batchStartOffset :
+          new StreamingOffset(snapshotAfter(currentOffset.snapshotId()), 0L, false);
+
+      MicroBatch latestMicroBatch = MicroBatches.from(table.snapshot(currentOffset.snapshotId()), table.io())
           .caseSensitive(caseSensitive)
           .specsById(table.specs())
           .generate(currentOffset.position(), Long.MAX_VALUE, currentOffset.shouldScanAllFiles());
 
       fileScanTasks.addAll(latestMicroBatch.tasks());
-    } while (latestMicroBatch.snapshotId() != endOffset.snapshotId());
+    } while (currentOffset.snapshotId() != endOffset.snapshotId());
 
     return fileScanTasks;
   }
