@@ -27,6 +27,7 @@ import java.io.OutputStreamWriter;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Set;
 import org.apache.iceberg.CombinedScanTask;
 import org.apache.iceberg.DataOperations;
 import org.apache.iceberg.FileScanTask;
@@ -45,6 +46,7 @@ import org.apache.iceberg.relocated.com.google.common.base.Joiner;
 import org.apache.iceberg.relocated.com.google.common.base.Preconditions;
 import org.apache.iceberg.relocated.com.google.common.collect.Iterables;
 import org.apache.iceberg.relocated.com.google.common.collect.Lists;
+import org.apache.iceberg.relocated.com.google.common.collect.Sets;
 import org.apache.iceberg.spark.Spark3Util;
 import org.apache.iceberg.spark.SparkReadOptions;
 import org.apache.iceberg.spark.source.SparkBatchScan.ReadTask;
@@ -79,8 +81,7 @@ public class SparkMicroBatchStream implements MicroBatchStream {
   private final Long splitOpenFileCost;
   private final boolean localityPreferred;
   private final StreamingOffset initialOffset;
-  private final boolean ignoreDelete;
-  private final boolean ignoreRepace;
+  private final Set<String> skippableDataOperations;
 
   SparkMicroBatchStream(JavaSparkContext sparkContext, Table table, boolean caseSensitive,
                         Schema expectedSchema, CaseInsensitiveStringMap options, String checkpointLocation) {
@@ -102,6 +103,15 @@ public class SparkMicroBatchStream implements MicroBatchStream {
 
     InitialOffsetStore initialOffsetStore = new InitialOffsetStore(table, checkpointLocation);
     this.initialOffset = initialOffsetStore.initialOffset();
+
+    this.skippableDataOperations = Sets.newHashSet();
+    if (Spark3Util.propertyAsBoolean(options, SparkReadOptions.READ_STREAM_SKIP_DELETE, false)) {
+      this.skippableDataOperations.add(DataOperations.DELETE);
+    }
+
+    if (Spark3Util.propertyAsBoolean(options, SparkReadOptions.READ_STREAM_SKIP_REPLACE, false)) {
+      this.skippableDataOperations.add(DataOperations.REPLACE);
+    }
   }
 
   @Override
@@ -182,10 +192,19 @@ public class SparkMicroBatchStream implements MicroBatchStream {
         currentOffset = batchStartOffset;
       } else {
         Snapshot snapshotAfter = SnapshotUtil.snapshotAfter(table, currentOffset.snapshotId());
+        boolean shouldSkip = skippableDataOperations.contains(snapshotAfter.operation());
+
+        // TODO: fix error message
+        Preconditions.checkState(
+            snapshotAfter.operation().equals(DataOperations.APPEND) || shouldSkip,
+            "Invalid Snapshot operation: %s, only APPEND is allowed.", snapshotAfter.operation());
+
+        currentOffset = new StreamingOffset(snapshotAfter.snapshotId(), 0L, false);
+
+        if (shouldSkip) {
+          continue;
+        }
       }
-      currentOffset = currentOffset == null ?
-          batchStartOffset :
-          new StreamingOffset(snapshotAfter(currentOffset.snapshotId()), 0L, false);
 
       MicroBatch latestMicroBatch = MicroBatches.from(table.snapshot(currentOffset.snapshotId()), table.io())
           .caseSensitive(caseSensitive)
@@ -196,15 +215,6 @@ public class SparkMicroBatchStream implements MicroBatchStream {
     } while (currentOffset.snapshotId() != endOffset.snapshotId());
 
     return fileScanTasks;
-  }
-
-  private long snapshotAfter(long snapshotId) {
-    Snapshot snapshotAfter = SnapshotUtil.snapshotAfter(table, snapshotId);
-
-    Preconditions.checkState(snapshotAfter.operation().equals(DataOperations.APPEND),
-            "Invalid Snapshot operation: %s, only APPEND is allowed.", snapshotAfter.operation());
-
-    return snapshotAfter.snapshotId();
   }
 
   private static class InitialOffsetStore {
